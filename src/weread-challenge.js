@@ -27,6 +27,8 @@ const WEREAD_SPEED = process.env.WEREAD_SPEED || "slow"; // Reading speed, slow 
 const WEREAD_SELECTION = process.env.WEREAD_SELECTION || 2; // Selection method
 const WEREAD_BROWSER = process.env.WEREAD_BROWSER || Browser.CHROME; // Browser to use, chrome | MicrosoftEdge | firefox
 const ENABLE_EMAIL = process.env.ENABLE_EMAIL === "true" || false; // Enable email notifications
+const ENABLE_WXPUSHER = process.env.ENABLE_WXPUSHER === "true" || false; // Enable WxPusher notifications
+const WXPUSHER_SPT = process.env.WXPUSHER_SPT || ""; // WxPusher SimplePushToken
 const WEREAD_AGREE_TERMS = process.env.WEREAD_AGREE_TERMS === "true" || true; // Agree to terms
 const EMAIL_PORT = parseInt(process.env.EMAIL_PORT) || 465; // SMTP port number, default 465
 // env vars:
@@ -99,6 +101,7 @@ function logEventToWereadLog(err) {
     browser: WEREAD_BROWSER,
     duration: parseInt(WEREAD_DURATION) || 0,
     enable_email: ENABLE_EMAIL,
+    enable_wxpusher: ENABLE_WXPUSHER,
     error: err,
     version: WEREAD_VERSION,
   };
@@ -341,6 +344,76 @@ async function sendMail(subject, text, filePaths = []) {
   } catch (error) {
     console.error("Error sending email: ", error);
     return false;
+  }
+}
+
+async function sendWxPusherMsg(subject, text) {
+  if (!WXPUSHER_SPT) {
+    console.error("WXPUSHER_SPT not configured.");
+    return;
+  }
+
+  const url = "https://wxpusher.zjiecode.com/api/send/message/simple-push";
+  
+  // 构建推送内容
+  const content = `${subject}\n\n${text}`;
+  
+  const requestData = {
+    content: content,
+    summary: subject,
+    contentType: 1, // 1表示文字
+    spt: WXPUSHER_SPT
+  };
+
+  try {
+    const options = {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      }
+    };
+
+    const req = https.request(url, options, (res) => {
+      let responseData = "";
+      
+      res.on("data", (chunk) => {
+        responseData += chunk;
+      });
+      
+      res.on("end", () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          console.info("Successfully sent message via WxPusher");
+        } else {
+          console.error(`Failed to send message via WxPusher: ${res.statusCode} - ${responseData}`);
+        }
+      });
+    });
+    
+    req.on("error", (error) => {
+      console.error("Error sending message via WxPusher:", error.message);
+    });
+    
+    req.write(JSON.stringify(requestData));
+    req.end();
+    
+  } catch (error) {
+    console.error("Error sending message via WxPusher:", error.message);
+  }
+}
+
+async function notifyUser(subject, text, filePaths = []) {
+  // 检查是否启用了任何通知方式
+  if (!ENABLE_EMAIL && !ENABLE_WXPUSHER) {
+    console.info("No notification method enabled.");
+    return;
+  }
+  
+  if (ENABLE_EMAIL) {
+    await sendMail(subject, text, filePaths);
+  }
+  
+  if (ENABLE_WXPUSHER) {
+    await sendWxPusherMsg(subject, text);
   }
 }
 
