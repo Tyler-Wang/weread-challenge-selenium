@@ -29,7 +29,7 @@ const WEREAD_BROWSER = process.env.WEREAD_BROWSER || Browser.CHROME; // Browser 
 const ENABLE_EMAIL = process.env.ENABLE_EMAIL === "true" || false; // Enable email notifications
 const ENABLE_WXPUSHER = process.env.ENABLE_WXPUSHER === "true" || false; // Enable WxPusher notifications
 const WXPUSHER_SPT = process.env.WXPUSHER_SPT || ""; // WxPusher SimplePushToken
-const WEREAD_AGREE_TERMS = process.env.WEREAD_AGREE_TERMS === "true" || true; // Agree to terms
+const WEREAD_AGREE_TERMS = process.env.WEREAD_AGREE_TERMS === "true" || false; // Agree to terms
 const EMAIL_PORT = parseInt(process.env.EMAIL_PORT) || 465; // SMTP port number, default 465
 // env vars:
 // WEREAD_REMOTE_BROWSER
@@ -606,9 +606,7 @@ async function main() {
 
     if (maxRetries <= 0) {
       console.error("Failed to login.");
-      if (ENABLE_EMAIL) {
-        await sendMail("[项目进展--项目停滞]", "Failed to login.");
-      }
+      await notifyUser("[项目进展--项目停滞]", "Failed to login.");
       return;
     }
 
@@ -665,16 +663,14 @@ async function main() {
     );
     console.info("Successfully switched to vertical scroll mode.");
 
-    if (ENABLE_EMAIL) {
-      await driver
-        .takeScreenshot()
-        .then((image, err) =>
-          fs.writeFileSync("./data/screenshot.png", image, "base64")
-        );
-      await sendMail("[项目进展--项目启动]", "Login successful.", [
-        "./data/screenshot.png",
-      ]);
-    }
+    await driver
+    .takeScreenshot()
+    .then((image, err) =>
+      fs.writeFileSync("./data/screenshot.png", image, "base64")
+    );
+    await notifyUser("[项目进展--阅读开始]", "Login successful. Reading started...", [
+      "./data/screenshot.png",
+    ]);
 
     // run script to keep reading
     // let script = fs.readFileSync("./src/keep_reading.js", "utf8");
@@ -813,22 +809,19 @@ async function main() {
 
     // save cookies after reading
     await saveCookies(driver, COOKIE_FILE);
-    if (ENABLE_EMAIL) {
-      await driver
-        .takeScreenshot()
-        .then((image, err) =>
-          fs.writeFileSync("./data/screenshot.png", image, "base64")
-        );
-      await sendMail("[项目进展--项目完成]", "Reading completed.", [
-        "./data/screenshot.png",
-      ]);
-    }
+    // await driver
+    // .takeScreenshot()
+    // .then((image, err) =>
+    //   fs.writeFileSync("./data/screenshot.png", image, "base64")
+    // );
+    console.info("Reading completed call notifyUser.");
+    await notifyUser("[项目进展--阅读完成]", "Reading completed.", [
+      "./data/screenshot.png",
+    ]);
   } catch (e) {
     console.info(e);
     const errorMessage = String(e?.message || e || "Unknown error");
-    if (ENABLE_EMAIL) {
-      await sendMail("[项目进展--项目停滞]", "Error occurred: " + errorMessage);
-    }
+    await notifyUser("[项目进展--阅读停滞]", "Error occurred: " + errorMessage);
 
     if (WEREAD_AGREE_TERMS) {
       logEventToWereadLog(errorMessage);
@@ -843,7 +836,11 @@ async function main() {
       await driver.quit();
       console.info("Browser closed.");
     }
-    process.exit(0);
+    // 替换 process.exit(0) 为：
+    setTimeout(() => {
+      console.info("Process exit.(Delayed exit after ensuring all async operations completed)");
+      process.exit(0);
+    }, 5000); // 给5秒钟让异步操作完成
   }
 }
 
