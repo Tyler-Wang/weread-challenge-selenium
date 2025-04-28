@@ -22,7 +22,8 @@ const URL = "https://weread.qq.com/"; // Replace with the target URL
 const DEBUG = process.env.DEBUG === "true" || false; // Enable debug mode
 const WEREAD_USER = process.env.WEREAD_USER || "weread-default"; // User to use
 const WEREAD_REMOTE_BROWSER = process.env.WEREAD_REMOTE_BROWSER;
-const WEREAD_DURATION = process.env.WEREAD_DURATION || 10; // Reading duration in minutes
+const WEREAD_DURATION = process.env.WEREAD_DURATION || 10; // Reading duration in minutes (minimum)
+const MAX_WEREAD_DURATION = process.env.MAX_WEREAD_DURATION || 20; // Maximum reading duration in minutes
 const WEREAD_SPEED = process.env.WEREAD_SPEED || "slow"; // Reading speed, slow | normal | fast
 const WEREAD_SELECTION = process.env.WEREAD_SELECTION || 2; // Selection method
 const WEREAD_BROWSER = process.env.WEREAD_BROWSER || Browser.CHROME; // Browser to use, chrome | MicrosoftEdge | firefox
@@ -89,7 +90,7 @@ function getOSInfo() {
   }
 }
 // post data to weread log
-function logEventToWereadLog(err) {
+function logEventToWereadLog(err, actualDuration) {
   const url = DEBUG
     ? "http://127.0.0.1:8787/logs"
     : "https://weread-challenge.techfetch.dev/logs";
@@ -99,7 +100,9 @@ function logEventToWereadLog(err) {
   let params = {
     os: getOSInfo(),
     browser: WEREAD_BROWSER,
-    duration: parseInt(WEREAD_DURATION) || 0,
+    min_duration: parseInt(WEREAD_DURATION) || 10,
+    max_duration: parseInt(MAX_WEREAD_DURATION) || 30,
+    actual_duration: actualDuration || parseInt(WEREAD_DURATION) || 10,
     enable_email: ENABLE_EMAIL,
     enable_wxpusher: ENABLE_WXPUSHER,
     error: err,
@@ -615,10 +618,6 @@ async function main() {
     // If cookies exist, save them
     await saveCookies(driver, COOKIE_FILE);
 
-    if (WEREAD_AGREE_TERMS) {
-      logEventToWereadLog("");
-    }
-
     // Find the first div with class "wr_index_mini_shelf_card"
     let selection = Number(WEREAD_SELECTION);
     if (selection === 0) {
@@ -668,22 +667,36 @@ async function main() {
     .then((image, err) =>
       fs.writeFileSync("./data/screenshot.png", image, "base64")
     );
-    await notifyUser("[项目进展--阅读开始]", "Login successful. Reading started...", [
-      "./data/screenshot.png",
-    ]);
 
     // run script to keep reading
     // let script = fs.readFileSync("./src/keep_reading.js", "utf8");
     // await driver.executeScript(script);
     console.info("Reading started...");
 
-    // duration from environment variable, WEREAD_DURATION in minutes
-    console.info("Reading duration: ", WEREAD_DURATION, " minutes");
+    // 从[WEREAD_DURATION, MAX_WEREAD_DURATION]区间随机选择一个整数值
+    const minDuration = parseInt(WEREAD_DURATION);
+    const maxDuration = parseInt(MAX_WEREAD_DURATION);
+    
+    // 确保最大值不小于最小值
+    const actualMinDuration = Math.min(minDuration, maxDuration);
+    const actualMaxDuration = Math.max(minDuration, maxDuration);
+    // 计算随机阅读时长
+    const actualDuration = Math.floor(Math.random() * (actualMaxDuration - actualMinDuration + 1)) + actualMinDuration;
+    
+    console.info("Reading duration: ", actualDuration, " minutes (random between ", actualMinDuration, " and ", actualMaxDuration, ")");
     let startTime = new Date();
     console.info("Start time: ", startTime);
-    let endTime = new Date(startTime.getTime() + WEREAD_DURATION * 60000);
+    let endTime = new Date(startTime.getTime() + actualDuration * 60000);
     console.info("End time: ", endTime);
     let screenshotTime = startTime;
+    
+    // 添加日志上报
+    // if (WEREAD_AGREE_TERMS) {
+    //   logEventToWereadLog("", actualDuration);
+    // }
+    await notifyUser("阅读开始, 计划" + actualDuration + "分钟", "Login successful. Reading started...", [
+      "./data/screenshot.png",
+    ]);
     // log last read time per minute
     while (new Date() < endTime) {
       let currentTime = new Date();
@@ -815,17 +828,19 @@ async function main() {
     //   fs.writeFileSync("./data/screenshot.png", image, "base64")
     // );
     console.info("Reading completed call notifyUser.");
-    await notifyUser("[项目进展--阅读完成]", "Reading completed.", [
+    await notifyUser("阅读完成, 时长" + actualDuration + "分钟", "Reading completed.", [
       "./data/screenshot.png",
     ]);
   } catch (e) {
     console.info(e);
     const errorMessage = String(e?.message || e || "Unknown error");
-    await notifyUser("[项目进展--阅读停滞]", "Error occurred: " + errorMessage);
+    await notifyUser("阅读停滞", "Error occurred: " + errorMessage);
 
-    if (WEREAD_AGREE_TERMS) {
-      logEventToWereadLog(errorMessage);
-    }
+    // if (WEREAD_AGREE_TERMS) {
+    //   // 如果actualDuration已定义则使用它，否则使用默认值
+    //   const durationToLog = typeof actualDuration !== 'undefined' ? actualDuration : parseInt(WEREAD_DURATION);
+    //   logEventToWereadLog(errorMessage, durationToLog);
+    // }
 
     // wait for 3 seconds before closing the browser
     await new Promise((resolve) => setTimeout(resolve, 3000));
