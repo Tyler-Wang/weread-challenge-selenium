@@ -29,6 +29,8 @@ const WEREAD_SELECTION = process.env.WEREAD_SELECTION || 2; // Selection method
 const WEREAD_BROWSER = process.env.WEREAD_BROWSER || Browser.CHROME; // Browser to use, chrome | MicrosoftEdge | firefox
 const ENABLE_EMAIL = process.env.ENABLE_EMAIL === "true" || false; // Enable email notifications
 const ENABLE_WXPUSHER = process.env.ENABLE_WXPUSHER === "true" || false; // Enable WxPusher notifications
+const ENABLE_PushShowDoc = process.env.ENABLE_PushShowDoc === "true" || false; // Enable PushShowDoc notifications
+const PushShowDoc_Token = process.env.PushShowDoc_Token || ""; // PushShowDoc Token for notifications
 const WXPUSHER_SPT = process.env.WXPUSHER_SPT || ""; // WxPusher SimplePushToken
 const WEREAD_AGREE_TERMS = process.env.WEREAD_AGREE_TERMS === "true" || false; // Agree to terms
 const EMAIL_PORT = parseInt(process.env.EMAIL_PORT) || 465; // SMTP port number, default 465
@@ -404,9 +406,66 @@ async function sendWxPusherMsg(subject, text) {
   }
 }
 
+async function sendPushShowDocMsg(subject, text) {
+  if (!PushShowDoc_Token) {
+    console.error("PushShowDoc_Token not configured.");
+    return;
+  }
+
+  const url = `https://push.showdoc.com.cn/server/api/push/${PushShowDoc_Token}`;
+  
+  const requestData = {
+    title: subject,
+    content: text
+  };
+
+  try {
+    const options = {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      }
+    };
+
+    const req = https.request(url, options, (res) => {
+      let responseData = "";
+      
+      res.on("data", (chunk) => {
+        responseData += chunk;
+      });
+      
+      res.on("end", () => {
+        let response;
+        try {
+          response = JSON.parse(responseData);
+        } catch (e) {
+          console.error("Failed to parse PushShowDoc response:", e.message);
+          return;
+        }
+        
+        if (response.error_code === 0) {
+          console.info("Successfully sent message via PushShowDoc");
+        } else {
+          console.error(`Failed to send message via PushShowDoc: ${response.error_code} - ${response.error_message}`);
+        }
+      });
+    });
+    
+    req.on("error", (error) => {
+      console.error("Error sending message via PushShowDoc:", error.message);
+    });
+    
+    req.write(JSON.stringify(requestData));
+    req.end();
+    
+  } catch (error) {
+    console.error("Error sending message via PushShowDoc:", error.message);
+  }
+}
+
 async function notifyUser(subject, text, filePaths = []) {
   // 检查是否启用了任何通知方式
-  if (!ENABLE_EMAIL && !ENABLE_WXPUSHER) {
+  if (!ENABLE_EMAIL && !ENABLE_WXPUSHER && !ENABLE_PushShowDoc) {
     console.info("No notification method enabled.");
     return;
   }
@@ -417,6 +476,10 @@ async function notifyUser(subject, text, filePaths = []) {
   
   if (ENABLE_WXPUSHER) {
     await sendWxPusherMsg(subject, text);
+  }
+  
+  if (ENABLE_PushShowDoc) {
+    await sendPushShowDocMsg(subject, text);
   }
 }
 
