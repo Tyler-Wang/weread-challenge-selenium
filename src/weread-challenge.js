@@ -13,9 +13,10 @@ const fs = require("fs");
 const path = require("path");
 const https = require("https");
 const http = require("http");
+const { execSync, spawnSync } = require("child_process");
 const os = require("os");
 
-const WEREAD_VERSION = "0.3.0";
+const WEREAD_VERSION = "0.11.0";
 const COOKIE_FILE = "./data/cookies.json"; // Path to save/load cookies
 const LOGIN_QR_CODE = "./data/login.png"; // Path to save login QR code
 const URL = "https://weread.qq.com/"; // Replace with the target URL
@@ -34,6 +35,9 @@ const PushShowDoc_Token = process.env.PushShowDoc_Token || ""; // PushShowDoc To
 const WXPUSHER_SPT = process.env.WXPUSHER_SPT || ""; // WxPusher SimplePushToken
 const WEREAD_AGREE_TERMS = process.env.WEREAD_AGREE_TERMS === "true" || false; // Agree to terms
 const EMAIL_PORT = parseInt(process.env.EMAIL_PORT) || 465; // SMTP port number, default 465
+const BARK_KEY = process.env.BARK_KEY || ""; // Bark推送密钥
+const BARK_SERVER = process.env.BARK_SERVER || "https://api.day.app"; // Bark服务器地址
+const QR_EXPIRED_TEXTS = ["点击刷新二维码", "二维码已失效"]; // 登录二维码过期提示
 // env vars:
 // WEREAD_REMOTE_BROWSER
 // WEREAD_DURATION
@@ -44,6 +48,8 @@ const EMAIL_PORT = parseInt(process.env.EMAIL_PORT) || 465; // SMTP port number,
 // EMAIL_PASS
 // EMAIL_FROM
 // EMAIL_TO
+// BARK_KEY
+// BARK_SERVER
 
 // create /data directory if not exists
 if (!fs.existsSync("./data")) {
@@ -74,6 +80,146 @@ function redirectConsole(method) {
 // Redirect all major console methods
 if (!DEBUG) {
   ["info", "warn", "error"].forEach(redirectConsole);
+}
+
+// --- 诊断与健康检查工具函数 ---
+function isHttpUrl(str) {
+  try {
+    const u = new URL(str);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch (_) {
+    return false;
+  }
+}
+
+async function fetchJson(url, timeoutMs = 3000) {
+  return await new Promise((resolve, reject) => {
+    const client = url.startsWith("https:") ? https : http;
+    const req = client.get(url, { timeout: timeoutMs }, (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        try {
+          resolve({ statusCode: res.statusCode, body: JSON.parse(data || "{}") });
+        } catch (e) {
+          resolve({ statusCode: res.statusCode, body: data });
+        }
+      });
+    });
+    req.on("timeout", () => {
+      req.destroy(new Error("request timeout"));
+    });
+    req.on("error", reject);
+  });
+}
+
+async function checkSeleniumHealth(remoteUrl) {
+  try {
+    if (!remoteUrl || !isHttpUrl(remoteUrl)) {
+      console.warn("跳过健康检查：WEREAD_REMOTE_BROWSER 未设置或非法。");
+      return null;
+    }
+    // 优先 /status，兼容 /wd/hub/status
+    const base = remoteUrl.endsWith("/") ? remoteUrl.slice(0, -1) : remoteUrl;
+    const endpoints = ["/status", "/wd/hub/status"];
+    for (const ep of endpoints) {
+      try {
+        const { statusCode, body } = await fetchJson(`${base}${ep}`, 3000);
+        if (statusCode >= 200 && statusCode < 300) {
+          const ready = body?.ready ?? body?.value?.ready;
+          console.info(`Selenium 健康检查 ${ep} 响应: ready=${ready}`);
+          return { endpoint: ep, ready, raw: body };
+        }
+      } catch (_) {
+        // 继续尝试下一个端点
+      }
+    }
+    console.warn("Selenium 健康检查失败：所有端点无有效响应。");
+    return null;
+  } catch (e) {
+    console.warn("Selenium 健康检查异常：", e.message || e);
+    return null;
+  }
+}
+
+function dockerAvailable() {
+  try {
+    const out = spawnSync("docker", ["version"], { encoding: "utf8" });
+    return out.status === 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+function findSeleniumContainers() {
+  try {
+    const out = execSync(
+      'docker ps --format "{{.ID}}\t{{.Image}}\t{{.Names}}"',
+      { encoding: "utf8" }
+    );
+    const lines = out.split(/\r?\n/).filter(Boolean);
+    const hits = lines
+      .map((l) => {
+        const [id, image, name] = l.split(/\t/);
+        return { id, image, name };
+      })
+      .filter((x) =>
+        /selenium\/(standalone-|node-).*chrome/i.test(x.image || "") ||
+        /selenium/i.test(x.name || "")
+      );
+    return hits;
+  } catch (e) {
+    console.warn("查找 Selenium 容器失败：", e.message || e);
+    return [];
+  }
+}
+
+function collectSeleniumLogs(tail = 300) {
+  try {
+    if (!dockerAvailable()) {
+      console.warn("Docker 不可用，跳过 selenium 日志抓取。");
+      return null;
+    }
+    const containers = findSeleniumContainers();
+    if (!containers.length) {
+      console.warn("未发现运行中的 selenium 容器，跳过日志抓取。");
+      return null;
+    }
+    const ts = new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-")
+      .replace("T", "_")
+      .replace("Z", "");
+    const outFile = path.join("./data", `selenium-logs-${ts}.log`);
+    let combined = "";
+    for (const c of containers) {
+      try {
+        const logs = execSync(`docker logs --tail=${tail} ${c.id} 2>&1`, {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        combined += `\n===== CONTAINER ${c.name} (${c.image}) =====\n` + logs;
+      } catch (e) {
+        combined += `\n===== CONTAINER ${c.name} (${c.image}) 日志获取失败: ${e.message} =====\n`;
+      }
+    }
+    fs.writeFileSync(outFile, combined, "utf8");
+    console.info("已抓取 selenium 容器日志:", outFile);
+    return outFile;
+  } catch (e) {
+    console.warn("保存 selenium 日志失败：", e.message || e);
+    return null;
+  }
+}
+
+async function collectDiagnostics(reason) {
+  try {
+    console.warn("开始收集诊断信息，原因：", reason?.toString()?.slice(0, 180) || "未知");
+    await checkSeleniumHealth(WEREAD_REMOTE_BROWSER);
+    collectSeleniumLogs(400);
+  } catch (_) {
+    // 忽略诊断过程错误
+  }
 }
 
 function getOSInfo() {
@@ -196,7 +342,11 @@ function getUserInfo() {
 }
 
 async function saveCookies(driver, filePath) {
-  const cookies = await driver.manage().getCookies();
+  let cookies = await driver.manage().getCookies();
+  // If using Safari, set secure to true for all cookies
+  if (WEREAD_BROWSER === Browser.SAFARI) {
+    cookies = cookies.map(cookie => ({ ...cookie, secure: true }));
+  }
   fs.writeFileSync(filePath, JSON.stringify(cookies, null, 2));
   console.info("Cookies saved successfully.");
 }
@@ -255,6 +405,162 @@ async function isElementInViewport(driver, element) {
     rect.right <= viewport.width &&
     (await element.isDisplayed())
   );
+}
+
+// 简化的二维码定位函数
+async function findQRCodeElement(driver) {
+  try {
+    console.info("正在查找二维码登录元素...");
+    // 使用更精确的定位策略，优先查找二维码图片
+    const qrCodeImg = await driver.wait(
+      until.elementLocated(
+        By.xpath("//img[contains(@class, 'qr') or contains(@src, 'qr') or contains(@alt, '二维码')]")
+      ),
+      3000
+    );
+    console.info("找到二维码图片元素");
+    return true;
+  } catch (e) {
+    try {
+      // 备选方案：查找包含"扫码"或"二维码"文本的元素
+      await driver.wait(
+        until.elementLocated(
+          By.xpath("//*[contains(text(), '扫码') or contains(text(), '二维码')]")
+        ),
+        3000
+      );
+      console.info("找到包含'扫码'或'二维码'文本的元素");
+      return true;
+    } catch (e) {
+      console.info("未找到二维码相关元素，可能已经登录");
+      return false;
+    }
+  }
+}
+
+// 安全点击元素函数，处理元素被拦截的情况
+async function safeClickElement(driver, element, description = "元素") {
+  try {
+    // 首先检查元素是否可见和可点击
+    const isDisplayed = await element.isDisplayed();
+    if (!isDisplayed) {
+      console.warn(`${description}不可见，尝试滚动到元素位置`);
+      await driver.executeScript("arguments[0].scrollIntoView({block: 'center'});", element);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    
+    // 尝试直接点击
+    await element.click();
+    console.info(`成功点击${description}`);
+    return true;
+  } catch (error) {
+    console.warn(`直接点击${description}失败: ${error.message}`);
+    
+    try {
+      // 尝试使用JavaScript点击
+      console.info(`尝试使用JavaScript点击${description}`);
+      await driver.executeScript("arguments[0].click();", element);
+      console.info(`使用JavaScript成功点击${description}`);
+      return true;
+    } catch (jsError) {
+      console.warn(`使用JavaScript点击${description}失败: ${jsError.message}`);
+      
+      try {
+        // 尝试使用Actions类模拟点击
+        console.info(`尝试使用Actions类点击${description}`);
+        const actions = driver.actions({ bridge: true });
+        await actions.move({ origin: element }).click().perform();
+        console.info(`使用Actions类成功点击${description}`);
+        return true;
+      } catch (actionError) {
+        console.error(`所有点击方法都失败: ${actionError.message}`);
+        return false;
+      }
+    }
+  }
+}
+
+// 刷新二维码的函数
+async function refreshQRCode(driver) {
+  try {
+    console.info("开始刷新二维码...");
+    
+    // 尝试多种方式找到刷新按钮
+    const refreshLocators = [
+      By.css(".login_dialog_retry_delegate"),
+      By.xpath("//div[contains(@class, 'login_dialog_retry_delegate')]"),
+      By.xpath("//div[contains(text(), '点击刷新二维码') and @class='wr_login_modal_qr_overlay_text']"),
+      By.xpath("//div[contains(text(), '点击刷新二维码')]"),
+      By.xpath("//div[@class='login_dialog_retry_delegate']"),
+      By.xpath("//div[contains(@class, 'refresh') or contains(@class, 'retry')]"),
+      By.xpath("//button[contains(text(), '刷新')]"),
+      By.xpath("//span[contains(text(), '刷新')]")
+    ];
+    
+    let refreshClicked = false;
+    let refreshElement = null;
+    
+    // 尝试每个定位器
+    for (const locator of refreshLocators) {
+      try {
+        refreshElement = await driver.wait(until.elementLocated(locator), 2000);
+        if (refreshElement) {
+          console.info(`找到刷新元素，尝试点击: ${locator.toString()}`);
+          refreshClicked = await safeClickElement(driver, refreshElement, "刷新按钮");
+          if (refreshClicked) {
+            try {
+              await driver.wait(until.stalenessOf(refreshElement), 3000);
+            } catch (waitError) {
+              console.debug(`刷新元素可能未及时从DOM移除: ${waitError.message}`);
+            }
+            break;
+          }
+        }
+      } catch (e) {
+        console.debug(`未找到元素: ${locator.toString()}`);
+      }
+    }
+    
+    if (!refreshClicked) {
+      console.warn("常规定位失败，尝试执行脚本触发刷新");
+      try {
+        const jsClicked = await driver.executeScript(
+          "const delegate = document.querySelector('.login_dialog_retry_delegate'); if (delegate) { delegate.click(); return true; } return false;"
+        );
+        if (!jsClicked) {
+          console.error("无法找到或点击任何刷新按钮");
+          return false;
+        }
+        refreshClicked = true;
+      } catch (scriptError) {
+        console.error(`执行脚本触发刷新失败: ${scriptError.message}`);
+        return false;
+      }
+    }
+    
+    // 等待页面加载
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    
+    // 检查二维码是否已刷新
+    let qrElementFound = await findQRCodeElement(driver);
+    
+    if (qrElementFound) {
+      // 避免截图时二维码还未弹出
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // 保存截图
+      await driver.takeScreenshot().then((image, err) => {
+        fs.writeFileSync(LOGIN_QR_CODE, image, "base64");
+      });
+      console.info("QR code refreshed, datetime: ", new Date());
+      return true;
+    } else {
+      console.error("刷新后未能找到任何二维码相关元素");
+      return false;
+    }
+  } catch (error) {
+    console.error("刷新二维码过程中发生错误:", error.message);
+    return false;
+  }
 }
 
 async function sendMail(subject, text, filePaths = []) {
@@ -482,13 +788,98 @@ async function notifyUser(subject, text, filePaths = []) {
     await sendPushShowDocMsg(subject, text);
   }
 }
+async function sendBark(title, body, options = {}) {
+  if (!BARK_KEY) {
+    console.info("Bark推送密钥未配置");
+    return false;
+  }
+
+  const {
+    subtitle = "",
+    sound = "alarm",
+    group = "WeRead-Challenge",
+    icon = "",
+    url = "",
+    level = "active"
+  } = options;
+
+  // 构建Bark推送URL
+  let barkUrl = `${BARK_SERVER}/${BARK_KEY}`;
+
+  // 根据参数构建URL
+  if (subtitle) {
+    barkUrl += `/${encodeURIComponent(title)}/${encodeURIComponent(subtitle)}/${encodeURIComponent(body)}`;
+  } else if (title && body) {
+    barkUrl += `/${encodeURIComponent(title)}/${encodeURIComponent(body)}`;
+  } else {
+    barkUrl += `/${encodeURIComponent(body)}`;
+  }
+
+  // 添加查询参数
+  const params = new URLSearchParams();
+  if (sound && sound !== "alarm") params.append("sound", sound);
+  if (group && group !== "WeRead-Challenge") params.append("group", group);
+  if (icon) params.append("icon", icon);
+  if (url) params.append("url", url);
+  if (level && level !== "active") params.append("level", level);
+
+  const paramString = params.toString();
+  if (paramString) {
+    barkUrl += `?${paramString}`;
+  }
+
+  console.info("发送Bark推送:", barkUrl);
+
+  try {
+    const httpModule = barkUrl.startsWith("https://") ? https : http;
+
+    const req = httpModule.request(barkUrl, {
+      method: "GET",
+      headers: {
+        "User-Agent": "WeRead-Tracker/1.0"
+      }
+    }, (res) => {
+      let responseData = "";
+
+      res.on("data", (chunk) => {
+        responseData += chunk;
+      });
+
+      res.on("end", () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          console.info("Bark推送发送成功");
+        } else {
+          console.error(`Bark推送失败: ${res.statusCode} - ${responseData}`);
+        }
+      });
+    });
+
+    req.on("error", (error) => {
+      console.error("Bark推送请求错误:", error.message);
+    });
+
+    req.end();
+    return true;
+  } catch (error) {
+    console.error("Bark推送异常:", error);
+    return false;
+  }
+}
 
 async function main() {
   console.info("Starting the script, datetime: ", new Date());
   let driver;
+
+  // 发送脚本启动通知
+  await sendBark("微信读书挑战", "自动阅读脚本开始运行", {
+    subtitle: "脚本启动",
+    level: "active",
+    sound: "beginning"
+  });
   try {
     const capabilities = {
       browserName: WEREAD_BROWSER,
+      pageLoadStrategy: 'eager',
     };
 
     var browser;
@@ -524,9 +915,16 @@ async function main() {
         options.addArguments("--disable-popup-blocking");
         // check if WEREAD_REMOTE_BROWSER is empty
         if (WEREAD_REMOTE_BROWSER) {
-          console.info("WEREAD_REMOTE_BROWSER: ", WEREAD_REMOTE_BROWSER);
+          // 远端启动前做一次健康检查
+          await checkSeleniumHealth(WEREAD_REMOTE_BROWSER);
+          // Ensure the remote browser URL has a protocol
+          let remoteBrowserUrl = WEREAD_REMOTE_BROWSER;
+          if (!remoteBrowserUrl.startsWith("http://") && !remoteBrowserUrl.startsWith("https://")) {
+            remoteBrowserUrl = "http://" + remoteBrowserUrl;
+          }
+          console.info("WEREAD_REMOTE_BROWSER: ", remoteBrowserUrl);
           driver = await new Builder()
-            .usingServer(WEREAD_REMOTE_BROWSER)
+            .usingServer(remoteBrowserUrl)
             .forBrowser(WEREAD_BROWSER)
             .withCapabilities(capabilities)
             .setChromeOptions(options)
@@ -552,6 +950,13 @@ async function main() {
       default:
         break;
     }
+
+    // 全局超时配置，避免单次命令长时间挂起
+    await driver.manage().setTimeouts({
+      implicit: 5000,
+      pageLoad: 60000,
+      script: 30000,
+    });
 
     console.info("Browser launched successfully.");
 
@@ -592,20 +997,26 @@ async function main() {
       // 避免点击不成功
       await new Promise((resolve) => setTimeout(resolve, 1000));
       await loginLinks[0].click();
-      // if div contains text "扫码登录微信读书" then get screenshot
-      await driver.wait(
-        until.elementLocated(
-          By.xpath("//div[contains(text(), '扫码登录微信读书')]")
-        ),
-        10000
-      );
-      // 避免截图时二维码还未弹出
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      // save screenshot of QR code
-      await driver.takeScreenshot().then((image, err) => {
-        fs.writeFileSync(LOGIN_QR_CODE, image, "base64");
-      });
-      console.info("QR code saved, datetime: ", new Date());
+      
+      // 等待页面加载
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      
+      // 使用简化的二维码定位函数
+      let qrElementFound = await findQRCodeElement(driver);
+      
+      // 如果找到任何二维码相关元素，保存截图
+      if (qrElementFound) {
+        // 避免截图时二维码还未弹出
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        // save screenshot of QR code
+        await driver.takeScreenshot().then((image, err) => {
+          fs.writeFileSync(LOGIN_QR_CODE, image, "base64");
+        });
+        console.info("QR code saved, datetime: ", new Date());
+        
+      } else {
+        console.error("未能找到任何二维码相关元素");
+      }
     }
 
     let locator1 = By.xpath(
@@ -644,28 +1055,27 @@ async function main() {
         break;
       }
 
-      // if text contains "点击刷新二维码", then click on it
-      if (text.includes("点击刷新二维码")) {
+      // 如果出现二维码过期提示，则自动刷新
+      if (QR_EXPIRED_TEXTS.some((expiredText) => text.includes(expiredText))) {
         console.info("Refreshing QR code...");
-        await element.click();
+        let refreshSuccess = await refreshQRCode(driver);
 
-        // if div contains text "扫码登录微信读书" then get screenshot
-        await driver.wait(
-          until.elementLocated(
-            By.xpath("//div[contains(text(), '扫码登录微信读书')]")
-          ),
-          10000
-        );
-
-        // 避免截图时二维码还未弹出
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-
-        // save screenshot
-        await driver.takeScreenshot().then((image, err) => {
-          fs.writeFileSync(LOGIN_QR_CODE, image, "base64");
-        });
-
-        console.info("QR code refreshed, datetime: ", new Date());
+        if (!refreshSuccess) {
+          console.error("二维码刷新失败，尝试其他方法...");
+          // 如果刷新失败，尝试直接刷新页面
+          await driver.navigate().refresh();
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          
+          // 再次检查二维码
+          let qrElementFound = await findQRCodeElement(driver);
+          if (qrElementFound) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            await driver.takeScreenshot().then((image, err) => {
+              fs.writeFileSync(LOGIN_QR_CODE, image, "base64");
+            });
+            console.info("页面刷新后找到二维码, datetime: ", new Date());
+          }
+        }
         continue;
       }
     }
@@ -673,6 +1083,14 @@ async function main() {
     if (maxRetries <= 0) {
       console.error("Failed to login.");
       await notifyUser("[项目进展--项目停滞]", "Failed to login.");
+      if (ENABLE_EMAIL) {
+        await sendMail("[项目进展--项目停滞]", "Failed to login.");
+      }
+      await sendBark("微信读书挑战", "登录失败", {
+        subtitle: "项目停滞",
+        level: "critical",
+        sound: "alarm"
+      });
       return;
     }
 
@@ -683,24 +1101,48 @@ async function main() {
 
     // Find the first div with class "wr_index_mini_shelf_card"
     let selection = Number(WEREAD_SELECTION);
-    if (selection === 0) {
-      // random selection between 1 and 4
-      selection = Math.floor(Math.random() * 4) + 1;
-    }
-    let books = await driver.findElements(
-      // By.xpath("(//div[@class='wr_index_mini_shelf_card'])[" + selection + "]"),
-      By.xpath("//div[@class='wr_index_mini_shelf_card']"),
-      10000
-    );
-    if (books.length > 0 && books.length < selection) {
-      await books[0].click();
-      console.info("Clicked on the first book.");
-    } else if (books.length >= selection) {
-      await books[selection - 1].click();
-      console.info("Clicked on the ", selection, "th book.");
+    const DEFAULT_MOUSE_BOOK_URL = "https://weread.qq.com/web/reader/276323e0813ab90a5g0144d7";
+
+    if (selection === -1) {
+      console.info("WEREAD_SELECTION=-1，尝试打开《胆小如鼠》。");
+      const targetBookCards = await driver.findElements(
+        By.xpath("//div[@class='wr_index_mini_shelf_card' and .//div[contains(text(), '胆小如鼠')]]"),
+        5000
+      );
+
+      if (targetBookCards.length > 0) {
+        const clickResult = await safeClickElement(driver, targetBookCards[0], "《胆小如鼠》书籍卡片");
+        if (!clickResult) {
+          console.warn("点击《胆小如鼠》卡片失败，改为直接跳转链接。");
+          await driver.get(DEFAULT_MOUSE_BOOK_URL);
+        }
+      } else {
+        console.warn("未在书架找到《胆小如鼠》，直接跳转阅读链接。");
+        await driver.get(DEFAULT_MOUSE_BOOK_URL);
+      }
+
+      await driver.wait(until.titleContains("胆小如鼠"), 10000);
     } else {
-      console.error("Book not found.");
-      return;
+      if (selection === 0) {
+        // random selection between 1 and 4
+        selection = Math.floor(Math.random() * 4) + 1;
+      }
+      let books = await driver.findElements(
+        // By.xpath("(//div[@class='wr_index_mini_shelf_card'])[" + selection + "]"),
+        By.xpath("//div[@class='wr_index_mini_shelf_card']"),
+        10000
+      );
+      if (books.length > 0 && books.length < selection) {
+        await books[0].click();
+        console.info("Clicked on the first book.");
+      } else if (books.length >= selection) {
+        await books[selection - 1].click();
+        console.info("Clicked on the ", selection, "th book.");
+      } else {
+        console.warn("No book link found. Using the default link.");
+        await driver.get(DEFAULT_MOUSE_BOOK_URL);
+        await driver.wait(until.titleContains("胆小如鼠"), 10000);
+      }
     }
 
     // get button with title equal to "目录"
@@ -709,13 +1151,19 @@ async function main() {
       10000
     );
 
-    // get all buttons with title equal to "目录"
+    // 切换到"上下滚动阅读"模式
+    // OLD: 通过 title="切换到上下滚动阅读" 定位
+    // NEW: 通过 class "readerControls_item" + "isHorizontalReader" 定位
     let switchButton = await driver.findElements(
-      By.xpath("//button[@title='切换到上下滚动阅读']")
+      By.xpath(
+        "//button[@title='切换到上下滚动阅读'] | //button[contains(@class, 'readerControls_item') and contains(@class, 'isHorizontalReader')]"
+      )
     );
     if (switchButton.length > 0) {
       await switchButton[0].click();
       console.info("Switched to vertical scroll mode.");
+    } else {
+      console.warn('未找到用于切换为上下滚动阅读的按钮（兼容新老版本定位）');
     }
 
     // Wait for button with title "目录"
@@ -730,6 +1178,21 @@ async function main() {
     .then((image, err) =>
       fs.writeFileSync("./data/screenshot.png", image, "base64")
     );
+    if (ENABLE_EMAIL) {
+      await driver
+        .takeScreenshot()
+        .then((image, err) =>
+          fs.writeFileSync("./data/screenshot.png", image, "base64")
+        );
+      await sendMail("[项目进展--项目启动]", "Login successful.", [
+        "./data/screenshot.png",
+      ]);
+    }
+    await sendBark("微信读书挑战", "登录成功", {
+      subtitle: "项目启动",
+      level: "active",
+      sound: "birdsong"
+    });
 
     // run script to keep reading
     // let script = fs.readFileSync("./src/keep_reading.js", "utf8");
@@ -803,13 +1266,18 @@ async function main() {
       // check if the doc title contains "已读完"
       let title = await driver.getTitle();
       let needToJump = title.includes("已读完");
+      const needToJumpReasons = [];
+      if (needToJump) {
+        needToJumpReasons.push('标题包含 "已读完"');
+      }
       // check if got a "span" contains text "开通后即可阅读"
       let openBook = await driver.findElements(
         By.xpath("//span[contains(text(), '开通后即可阅读')]")
       );
       if (openBook.length > 0) {
-        console.warn("Need to open the book.");
+        console.warn("需要打开书籍");
         needToJump = true;
+        needToJumpReasons.push("需要打开书籍");
       }
 
       // find element div with class "readerFooter_ending_title" and content contains "全 书 完"
@@ -817,12 +1285,18 @@ async function main() {
         By.xpath("//div[contains(text(), '全 书 完')]")
       );
       if (readComplete.length > 0) {
-        console.warn("Book completed.");
+        console.warn("书籍已读完");
         needToJump = true;
+        needToJumpReasons.push("书籍已读完");
       }
 
       if (needToJump) {
-        console.warn("Book completed.");
+        console.warn(
+          "needToJump = true, reasons: " +
+            (needToJumpReasons.length
+              ? needToJumpReasons.join(" | ")
+              : "unknown")
+        );
         // jump to the top
         // click the buttion "目录"
         let catalogs = await driver.findElements(
@@ -898,6 +1372,24 @@ async function main() {
     console.info(e);
     const errorMessage = String(e?.message || e || "Unknown error");
     await notifyUser("阅读停滞", "Error occurred: " + errorMessage);
+    // Add line number to error message if possible
+    if (e && e.stack) {
+      const match = e.stack.match(/(src\/main.js):(\d+):(\d+)/);
+      if (match) {
+        errorMessage += ` (at ${match[1]}:${match[2]})`;
+      }
+    }
+    console.info(errorMessage);
+    // 出错时抓取 selenium 健康状态与容器日志
+    await collectDiagnostics(errorMessage);
+    if (ENABLE_EMAIL) {
+      await sendMail("[项目进展--项目停滞]", "Error occurred: " + errorMessage);
+    }
+    await sendBark("微信读书挑战", `发生错误：${errorMessage.substring(0, 100)}${errorMessage.length > 100 ? '...' : ''}`, {
+      subtitle: "项目停滞",
+      level: "critical",
+      sound: "alarm"
+    });
 
     // if (WEREAD_AGREE_TERMS) {
     //   // 如果actualDuration已定义则使用它，否则使用默认值
