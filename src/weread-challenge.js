@@ -20,23 +20,23 @@ const os = require("os");
 const COOKIE_FILE = "./data/cookies.json"; // Path to save/load cookies
 const LOGIN_QR_CODE = "./data/login.png"; // Path to save login QR code
 const URL = "https://weread.qq.com/"; // Replace with the target URL
-const DEBUG = process.env.DEBUG === "true" || false; // Enable debug mode
-const WEREAD_USER = process.env.WEREAD_USER || "weread-default"; // User to use
-const WEREAD_REMOTE_BROWSER = process.env.WEREAD_REMOTE_BROWSER;
-const WEREAD_DURATION = process.env.WEREAD_DURATION || 10; // Reading duration in minutes (minimum)
-const MAX_WEREAD_DURATION = process.env.MAX_WEREAD_DURATION || 20; // Maximum reading duration in minutes
-const WEREAD_SPEED = process.env.WEREAD_SPEED || "slow"; // Reading speed, slow | normal | fast
-const WEREAD_SELECTION = process.env.WEREAD_SELECTION || 2; // Selection method
-const WEREAD_BROWSER = process.env.WEREAD_BROWSER || Browser.CHROME; // Browser to use, chrome | MicrosoftEdge | firefox
-const ENABLE_EMAIL = process.env.ENABLE_EMAIL === "true" || false; // Enable email notifications
-const ENABLE_WXPUSHER = process.env.ENABLE_WXPUSHER === "true" || false; // Enable WxPusher notifications
-const ENABLE_PushShowDoc = process.env.ENABLE_PushShowDoc === "true" || false; // Enable PushShowDoc notifications
-const PushShowDoc_Token = process.env.PushShowDoc_Token || ""; // PushShowDoc Token for notifications
-const WXPUSHER_SPT = process.env.WXPUSHER_SPT || ""; // WxPusher SimplePushToken
-const WEREAD_AGREE_TERMS = process.env.WEREAD_AGREE_TERMS === "true" || false; // Agree to terms
-const EMAIL_PORT = parseInt(process.env.EMAIL_PORT) || 465; // SMTP port number, default 465
-const BARK_KEY = process.env.BARK_KEY || ""; // Bark推送密钥
-const BARK_SERVER = process.env.BARK_SERVER || "https://api.day.app"; // Bark服务器地址
+let DEBUG = process.env.DEBUG === "true" || false; // Enable debug mode
+let WEREAD_USER = process.env.WEREAD_USER || "weread-default"; // User to use
+let WEREAD_REMOTE_BROWSER = process.env.WEREAD_REMOTE_BROWSER;
+let WEREAD_DURATION = process.env.WEREAD_DURATION || 10; // Reading duration in minutes (minimum)
+let MAX_WEREAD_DURATION = process.env.MAX_WEREAD_DURATION || 20; // Maximum reading duration in minutes
+let WEREAD_SPEED = process.env.WEREAD_SPEED || "slow"; // Reading speed, slow | normal | fast
+let WEREAD_SELECTION = process.env.WEREAD_SELECTION || 2; // Selection method
+let WEREAD_BROWSER = process.env.WEREAD_BROWSER || Browser.CHROME; // Browser to use, chrome | MicrosoftEdge | firefox
+let ENABLE_EMAIL = process.env.ENABLE_EMAIL === "true" || false; // Enable email notifications
+let ENABLE_WXPUSHER = process.env.ENABLE_WXPUSHER === "true" || false; // Enable WxPusher notifications
+let ENABLE_PushShowDoc = process.env.ENABLE_PushShowDoc === "true" || false; // Enable PushShowDoc notifications
+let PushShowDoc_Token = process.env.PushShowDoc_Token || ""; // PushShowDoc Token for notifications
+let WXPUSHER_SPT = process.env.WXPUSHER_SPT || ""; // WxPusher SimplePushToken
+let WEREAD_AGREE_TERMS = process.env.WEREAD_AGREE_TERMS === "true" || false; // Agree to terms
+let EMAIL_PORT = parseInt(process.env.EMAIL_PORT) || 465; // SMTP port number, default 465
+let BARK_KEY = process.env.BARK_KEY || ""; // Bark推送密钥
+let BARK_SERVER = process.env.BARK_SERVER || "https://api.day.app"; // Bark服务器地址
 function getWereadVersion() {
   const packageJsonPaths = [
     path.resolve(__dirname, "../package.json"),
