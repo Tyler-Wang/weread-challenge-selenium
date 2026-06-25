@@ -2033,20 +2033,24 @@ async function runMain() {
     );
     console.info("Successfully switched to vertical scroll mode.");
 
-    await driver
-      .takeScreenshot()
-      .then((image, err) =>
-        fs.writeFileSync("./data/screenshot.png", image, "base64")
-      );
-    if (ENABLE_EMAIL) {
+    if (WEREAD_SCREENSHOT) {
       await driver
         .takeScreenshot()
         .then((image, err) =>
-          fs.writeFileSync(getScreenshotPath(), image, "base64")
+          fs.writeFileSync("./data/screenshot.png", image, "base64")
         );
-      await sendMail("[项目进展--项目启动]", "Login successful.", [
-        getScreenshotPath(),
-      ]);
+    }
+    if (ENABLE_EMAIL) {
+      if (WEREAD_SCREENSHOT) {
+        await driver
+          .takeScreenshot()
+          .then((image, err) =>
+            fs.writeFileSync(getScreenshotPath(), image, "base64")
+          );
+      }
+      await sendMail("[项目进展--项目启动]", "Login successful.", 
+        WEREAD_SCREENSHOT ? [getScreenshotPath()] : []
+      );
     }
     await sendBark("微信读书挑战", "登录成功", {
       subtitle: "项目启动",
@@ -2084,9 +2088,9 @@ async function runMain() {
     // if (WEREAD_AGREE_TERMS) {
     //   logEventToWereadLog("", actualDuration);
     // }
-    await notifyUser("阅读开始, 计划" + actualDuration + "分钟", "Login successful. Reading started...", [
-      "./data/screenshot.png",
-    ]);
+    await notifyUser("阅读开始, 计划" + actualDuration + "分钟", "Login successful. Reading started...", 
+      WEREAD_SCREENSHOT ? ["./data/screenshot.png"] : []
+    );
     // log last read time per minute
     while (new Date() < endTime) {
       let currentTime = new Date();
@@ -2231,9 +2235,9 @@ async function runMain() {
     //   fs.writeFileSync("./data/screenshot.png", image, "base64")
     // );
     console.info("Reading completed call notifyUser.");
-    await notifyUser("阅读完成, 时长" + actualDuration + "分钟", "Reading completed.", [
-      "./data/screenshot.png",
-    ]);
+    await notifyUser("阅读完成, 时长" + actualDuration + "分钟", "Reading completed.", 
+      WEREAD_SCREENSHOT ? ["./data/screenshot.png"] : []
+    );
   } catch (e) {
     console.info(e);
     const errorMessage = String(e?.message || e || "Unknown error");
